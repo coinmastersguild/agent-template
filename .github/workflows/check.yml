@@ -1,0 +1,11 @@
+name: check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh scripts/check-env.test.sh
+      - run: sh scripts/check-env.sh

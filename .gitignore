@@ -1,0 +1,5 @@
+# Private decryption keys. Never commit; paste into Pioneer Studio to unlock the agent.
+.env.keys
+# Local OpenClaw state created by `make run`.
+.openclaw/
+.DS_Store

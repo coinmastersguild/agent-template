@@ -1,0 +1,5 @@
+{
+  "permissions": {
+    "deny": ["Read(./.env.keys)", "Read(./**/.env.keys)"]
+  }
+}
