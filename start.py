@@ -58,6 +58,19 @@ def cron_plan(existing, wanted):
     return remove, add
 
 
+def keep_tool_secrets_in_memory(workspace, memory=Path("/dev/shm")):
+    """OpenHuman stores tool-server env values in plaintext under mcp_clients/. start.py
+    rebuilds that store from mcp.json on every boot, so it lives on tmpfs and never on disk."""
+    store = workspace / "mcp_clients"
+    if store.is_symlink() or not memory.is_dir():
+        return
+    target = memory / "openhuman-mcp-clients"
+    target.mkdir(mode=0o700, exist_ok=True)
+    if store.exists():
+        shutil.rmtree(store)
+    store.symlink_to(target)
+
+
 class Core:
     def __init__(self, port, token):
         self.url, self.token, self.next_id = f"http://127.0.0.1:{port}", token, 0
@@ -105,7 +118,7 @@ def apply(core, env):
 
     remove, add = cron_plan(result_list(core.call("cron_list"), "jobs"), json.loads((AGENT / "cron.json").read_text()))
     for job_id in remove:
-        core.call("cron_remove", {"id": job_id})
+        core.call("cron_remove", {"job_id": job_id})
     for job in add:
         core.call("cron_add", job)
     log(f"schedules: {', '.join(j['name'] for j in add) or 'none'}")
@@ -122,6 +135,7 @@ def main():
     workspace.mkdir(parents=True, exist_ok=True)
     for path in AGENT.glob("*.md"):
         shutil.copy(path, workspace / path.name)
+    keep_tool_secrets_in_memory(workspace)
 
     child = subprocess.Popen(["openhuman-core", "run", "--host", host, "--port", str(port)])
     signal.signal(signal.SIGTERM, lambda *_: child.terminate())

@@ -1,5 +1,7 @@
 import unittest
-from start import cron_plan, expand_servers
+import tempfile
+from pathlib import Path
+from start import cron_plan, expand_servers, keep_tool_secrets_in_memory
 
 
 class StartTest(unittest.TestCase):
@@ -23,6 +25,18 @@ class StartTest(unittest.TestCase):
         remove, add = cron_plan(existing, [{"name": "post", "schedule": {"kind": "every", "every_ms": 1}, "prompt": "p"}])
         self.assertEqual(remove, ["a"])
         self.assertEqual(add[0]["name"], "repo:post")
+
+
+    def test_tool_secret_store_moves_to_memory_and_old_disk_copy_is_removed(self):
+        with tempfile.TemporaryDirectory() as disk, tempfile.TemporaryDirectory() as memory:
+            old = Path(disk) / "mcp_clients"
+            old.mkdir()
+            (old / "mcp_clients.db").write_text("X_API_KEY=plain")
+            keep_tool_secrets_in_memory(Path(disk), Path(memory))
+            self.assertTrue(old.is_symlink())
+            self.assertEqual(list(Path(memory, "openhuman-mcp-clients").iterdir()), [])
+            keep_tool_secrets_in_memory(Path(disk), Path(memory))  # idempotent
+            self.assertTrue(old.is_symlink())
 
 
 if __name__ == "__main__":
