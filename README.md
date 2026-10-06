@@ -33,9 +33,10 @@ After that, edit → commit → push → **Pull & restart** in Studio.
 | Your machine | `.env.keys` (the unlock key) | Edit, encrypt, run locally |
 | Pioneer runtime | A read-only GitHub grant for repos you chose; your unlock key **in memory only** | Pull and run. It can't push, and it forgets the key on restart, so you unlock again |
 
-The Pioneer runtime clones this repository, points OpenClaw's workspace at
-`workspace/`, and starts `dotenvx run -- openclaw gateway` with your key in its
-environment. Decrypted values exist only inside your agent's process environment.
+On every **Pull & restart** the Pioneer runtime fetches this repository, copies
+`workspace/` into the agent's workspace (your committed files win; notes and
+memory the agent wrote itself are kept), and starts `dotenvx run -- openclaw
+gateway` with your key in its environment. Decrypted values exist only inside your agent's process environment.
 Pioneer operates the host; treat the runtime as isolated from other users, not
 as hidden from the operator.
 
