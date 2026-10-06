@@ -1,36 +1,40 @@
-# Pinned so every agent decrypts with the same dotenvx the runtime uses.
-DOTENVX := npx -y @dotenvx/dotenvx@2.33.0
-LOCAL := OPENCLAW_STATE_DIR=$(CURDIR)/.openclaw OPENCLAW_CONFIG_PATH=$(CURDIR)/.openclaw/openclaw.json
-PORT ?= 18790
+# Everything runs inside the same image Pioneer runs, so you only need Docker, git and make.
+IMAGE := agent-runtime:local
+DOCKER := docker run --rm -v "$(CURDIR)":/agent
+PORT ?= 7788
 
-.PHONY: setup secret key check run configure help
+.PHONY: help setup image secret key check run
 help: ## Show targets
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*## /\t/'
 
-setup: ## Install the pre-commit hook that blocks plaintext secrets
+setup: image ## Install the pre-commit hook that blocks plaintext secrets
 	git config core.hooksPath .githooks
-	@echo "Hook installed. Add secrets with: make secret NAME=<name>"
+	@echo "Ready. Add secrets with: make secret NAME=<name>"
 
-secret: ## Encrypt one secret into .env (prompts; value never hits shell history)
-	@test -n "$(NAME)" || { echo "usage: make secret NAME=TELEGRAM_BOT_TOKEN"; exit 1; }
-	@printf '%s: ' "$(NAME)"; stty -echo 2>/dev/null; read -r value; stty echo 2>/dev/null; echo; \
-	  $(DOTENVX) set --no-native --no-1password --no-bitwarden "$(NAME)" -- "$$value" >/dev/null && echo "Encrypted $(NAME) into .env. Commit .env; never .env.keys."
+image:
+	@docker build -q -t $(IMAGE) . >/dev/null
+
+secret: image ## Encrypt one secret into .env (prompts; never in shell history)
+	@test -n "$(NAME)" || { echo "usage: make secret NAME=X_API_KEY"; exit 1; }
+	@printf '%s: ' "$(NAME)"; stty -echo 2>/dev/null; read -r VALUE; stty echo 2>/dev/null; echo; export VALUE; \
+	  $(DOCKER) -e VALUE -e NAME=$(NAME) $(IMAGE) sh -c 'dotenvx set --no-native --no-1password --no-bitwarden "$$NAME" -- "$$VALUE" >/dev/null 2>&1' \
+	  && echo "Encrypted $(NAME) into .env. Commit .env; never .env.keys."
 
 key: ## Copy the unlock key for Pioneer Studio to the clipboard
-	@test -f .env.keys || { echo "No .env.keys yet. Run: make secret NAME=<name>"; exit 1; }
-	@key=$$(sed -n 's/^DOTENV_PRIVATE_KEY="\{0,1\}\([0-9a-f]\{64\}\)"\{0,1\}$$/\1/p' .env.keys); \
-	  test -n "$$key" || { echo ".env.keys has no DOTENV_PRIVATE_KEY"; exit 1; }; \
+	@key=$$(sed -n 's/^DOTENV_PRIVATE_KEY="\{0,1\}\([0-9a-f]\{64\}\)"\{0,1\}$$/\1/p' .env.keys 2>/dev/null); \
+	  test -n "$$key" || { echo "No unlock key yet. Run: make secret NAME=<name>"; exit 1; }; \
 	  if command -v pbcopy >/dev/null; then printf %s "$$key" | pbcopy; echo "Unlock key copied. Paste it into Studio → Unlock."; \
 	  else echo "$$key"; fi
 
-check: ## Verify no plaintext secret is committed
-	sh scripts/check-env.test.sh
-	sh scripts/check-env.sh
+check: ## Verify no plaintext secret is committed (also runs in CI)
+	cd scripts && python3 -m unittest -q test_check_env
+	python3 -m unittest -q test_start
+	python3 scripts/check_env.py
 
-configure: ## One-time: pick a model provider for local runs
-	$(LOCAL) openclaw configure
-
-run: ## Run this agent locally with decrypted secrets
-	@mkdir -p .openclaw
-	@$(LOCAL) openclaw config set agents.defaults.workspace $(CURDIR)/workspace >/dev/null
-	$(LOCAL) $(DOTENVX) run -- openclaw gateway --port $(PORT) --allow-unconfigured
+run: image ## Run the agent locally, exactly as Pioneer runs it
+	@mkdir -p .data; test -s .data/core.token || openssl rand -hex 32 > .data/core.token
+	@echo "Core: http://127.0.0.1:$(PORT)/rpc  token: .data/core.token  (OpenHuman app → remote core)"
+	@DOTENV_PRIVATE_KEY=$$(sed -n 's/^DOTENV_PRIVATE_KEY="\{0,1\}\([0-9a-f]\{64\}\)"\{0,1\}$$/\1/p' .env.keys 2>/dev/null) \
+	  OPENHUMAN_CORE_TOKEN=$$(cat .data/core.token) \
+	  docker run --rm $$([ -t 0 ] && echo -it) -p 127.0.0.1:$(PORT):7788 -v "$(CURDIR)":/agent:ro -v "$(CURDIR)/.data":/data \
+	  -e DOTENV_PRIVATE_KEY -e OPENHUMAN_CORE_TOKEN $(IMAGE)

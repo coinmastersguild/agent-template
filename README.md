@@ -1,65 +1,82 @@
-# OpenClaw agent template
+# Agent template
 
-Your agent, in your own GitHub repository. Edit it locally (with Claude Code or any
-editor), keep its secrets encrypted in git, and run it on Pioneer from
-[Pioneer Studio](https://studio.pioneers.dev) — or on your own machine.
+Your [OpenHuman](https://github.com/tinyhumansai/openhuman) agent in your own GitHub
+repository. Describe it in plain files, keep its secrets encrypted in git, run it on
+your machine, then run the identical container on Pioneer from
+[Pioneer Studio](https://studio.pioneers.dev).
 
 ## Start
 
 1. **Use this template** → create a repository under your account (private is fine).
-2. Clone it and install the secret guard:
-   ```sh
-   make setup
-   ```
-3. Shape your agent in [`workspace/`](workspace) — `SOUL.md`, `IDENTITY.md`,
-   `AGENTS.md`, `TOOLS.md`. These are standard OpenClaw workspace files.
-4. Add secrets (bot tokens, API keys). Each is encrypted into `.env`:
-   ```sh
-   make secret NAME=TELEGRAM_BOT_TOKEN
-   ```
-   Commit `.env`. **Never commit `.env.keys`** — it holds your private key and is
-   git-ignored. Back it up in your password manager; without it the secrets in
-   `.env` cannot be recovered.
-5. Push. In Studio: **GitHub → connect this repository**, then **Unlock** and paste
-   the key from `make key`.
+2. Clone it, then `make setup` (builds the runtime image, installs the secret guard).
+3. Describe your agent in [`agent/`](agent):
 
-After that, edit → commit → push → **Pull & restart** in Studio.
+   | File | What it is |
+   | --- | --- |
+   | `SOUL.md`, `IDENTITY.md` | Personality and purpose. Any `agent/*.md` is copied into OpenHuman's workspace |
+   | `mcp.json` | Tool servers (MCP). Use `${NAME}` for secrets, `${NAME:-default}` for optional settings |
+   | `cron.json` | Scheduled jobs: `[{"name", "schedule", "prompt"}]` |
+   | `tools/` | Your own tool code, if any |
 
-## How the pieces fit
+4. Secrets (API keys, bot tokens) go in an encrypted `.env`:
+   ```sh
+   make secret NAME=X_API_KEY
+   ```
+   Commit `.env`. **Never commit `.env.keys`**: it holds your private key and is
+   git-ignored. Back it up in your password manager.
+5. Give it a model and run it locally, exactly as Pioneer will:
+   ```sh
+   make secret NAME=MODEL_BASE_URL   # any OpenAI-compatible endpoint
+   make secret NAME=MODEL_API_KEY
+   make secret NAME=MODEL
+   make run
+   ```
+   Chat with it from the OpenHuman desktop app: choose a remote core, URL
+   `http://127.0.0.1:7788/rpc`, token from `.data/core.token`.
+6. Push. In Studio: **GitHub → connect this repository**, **Unlock** with the key
+   from `make key`, then **Pull & restart** whenever you push.
+
+On Pioneer the runtime supplies `MODEL_*` from your agent's prepaid budget; your own
+values apply only if you set them.
+
+## How it runs
+
+`start.py` is the whole runtime contract. It copies `agent/*.md` into OpenHuman's
+workspace (your files win; notes the agent wrote itself are kept), starts
+`openhuman-core`, signs in with OpenHuman's offline local session (no TinyHumans
+account), turns analytics off, points inference at `MODEL_BASE_URL`, installs
+`mcp.json` and replaces the schedules it owns with `cron.json`. A tool server whose
+secret is missing is disabled rather than crashing the agent, so a locked agent
+still boots.
 
 | Where | Holds | Can |
 | --- | --- | --- |
-| This repo | Workspace files, `.env` ciphertext | Be public or private; nothing in it is readable without your key |
+| This repo | Agent files, `.env` ciphertext | Be public or private; secrets are unreadable without your key |
 | Your machine | `.env.keys` (the unlock key) | Edit, encrypt, run locally |
-| Pioneer runtime | A read-only GitHub grant for repos you chose; your unlock key **in memory only** | Pull and run. It can't push, and it forgets the key on restart, so you unlock again |
+| Pioneer runtime | A read-only GitHub grant for this one repository; your unlock key **in memory only** | Pull and run. It can't push, and it forgets the key on restart, so you unlock again |
 
-On every **Pull & restart** the Pioneer runtime fetches this repository, copies
-`workspace/` into the agent's workspace (your committed files win; notes and
-memory the agent wrote itself are kept), and starts `dotenvx run -- openclaw
-gateway` with your key in its environment. Decrypted values exist only inside your agent's process environment.
-Pioneer operates the host; treat the runtime as isolated from other users, not
-as hidden from the operator.
+Pioneer operates the host: the runtime is isolated from other users, not hidden from
+the operator. Pioneer runs this image built from the upstream template at a pinned
+version; your copy of `Dockerfile` is used only locally.
 
 ## Commands
 
 | | |
 | --- | --- |
-| `make setup` | Install the pre-commit hook that rejects plaintext secrets |
+| `make setup` | Build the runtime image and install the pre-commit secret guard |
 | `make secret NAME=X` | Prompt for a value and encrypt it into `.env` |
 | `make key` | Copy your unlock key to the clipboard for Studio |
-| `make check` | Verify no committed `.env` value is plaintext (also runs in CI) |
-| `make configure` / `make run` | Pick a local model provider once, then run the agent locally |
+| `make check` | Fail if any committed `.env` value is plaintext (also runs in CI) |
+| `make run` | Run the agent locally in the Pioneer runtime image |
 
-Requires `git`, `make`, Node.js (for `npx @dotenvx/dotenvx`) and, for local runs,
-[OpenClaw](https://docs.openclaw.ai).
+Requires Docker, git and make (and Python 3 for `make check`).
 
 ## Rotating the key
 
-If `.env.keys` leaks: create a new key with `rm .env.keys .env && make secret ...`
-for each secret, rotate every secret at its provider (the old ciphertext stays in
-git history), push, and unlock again in Studio.
+If `.env.keys` leaks: `rm .env.keys .env`, re-add each secret with `make secret`,
+rotate every secret at its provider (old ciphertext stays in git history), push,
+and unlock again in Studio.
 
 ## License
 
-MIT. Files in `workspace/` are adapted from OpenClaw's reference templates
-(MIT, Copyright (c) 2025 Peter Steinberger); see [NOTICE](NOTICE).
+MIT. OpenHuman itself is GPL-3.0 and is downloaded, not included, by `Dockerfile`.
