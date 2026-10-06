@@ -4,7 +4,7 @@ FROM ubuntu:24.04
 ARG TARGETARCH
 ARG OPENHUMAN_VERSION=0.64.10
 ARG DOTENVX_VERSION=2.33.0
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git python3 \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-cryptography \
  && rm -rf /var/lib/apt/lists/*
 RUN set -eu; case "$TARGETARCH" in \
     arm64) oh=aarch64; oh_sum=445be5fd3d60d642635165412d6ea1dd445c75fa23feedb81e35200f4c8b338f; dx_sum=e75dea840fe409fbd16c9958bfb9927cfb6176ed72bea98c2308fc018c384455 ;; \
@@ -17,8 +17,8 @@ RUN set -eu; case "$TARGETARCH" in \
 RUN userdel --remove ubuntu && useradd --uid 1000 --create-home agent
 # The trusted supervisor lives in the image, never in the user's checkout. It runs as
 # root to hold the unlock key; OpenHuman and every tool run as `agent` (uid 1000).
-COPY runtime/supervisor.py /opt/agent-runtime/supervisor.py
-RUN chmod 0755 /opt/agent-runtime && chmod 0644 /opt/agent-runtime/supervisor.py
+COPY runtime/supervisor.py runtime/envfile.py /opt/agent-runtime/
+RUN chmod 0755 /opt/agent-runtime && chmod 0644 /opt/agent-runtime/*.py
 WORKDIR /agent
 ENV OPENHUMAN_WORKSPACE=/data OPENHUMAN_CORE_HOST=0.0.0.0
 EXPOSE 7788

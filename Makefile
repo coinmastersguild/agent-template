@@ -26,9 +26,10 @@ key: ## Copy the unlock key for Pioneer Studio to the clipboard
 	  if command -v pbcopy >/dev/null; then printf %s "$$key" | pbcopy; echo "Unlock key copied. Paste it into Studio → Unlock."; \
 	  else echo "$$key"; fi
 
-check: ## Verify no plaintext secret is committed (also runs in CI)
+check: image ## Verify no plaintext secret is committed and the runtime works (also runs in CI)
 	cd scripts && python3 -m unittest -q test_check_env
-	cd runtime && python3 -m unittest -q test_supervisor
+	docker run --rm --network none -e PYTHONDONTWRITEBYTECODE=1 -v "$(CURDIR)":/agent:ro -w /agent/runtime $(IMAGE) \
+	  python3 -m unittest -q test_envfile test_supervisor
 	python3 scripts/check_env.py
 
 run: image ## Run the agent locally, exactly as Pioneer runs it

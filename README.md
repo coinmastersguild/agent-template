@@ -53,15 +53,18 @@ the agent, so a locked agent still boots.
 
 - The supervisor runs as root; OpenHuman and every tool run as `agent` (uid 1000).
   Only the supervisor can read the unlock key in `/run/agent/unlock`, a root-only
-  tmpfs, and it never passes the key on. dotenvx parses your `.env` as `nobody`.
+  tmpfs, and it never passes the key on. It decrypts each `encrypted:` value itself
+  (`runtime/envfile.py`): values are used literally, with no `${VAR}` expansion and no
+  `$(command)` substitution. Plaintext assignments in `.env` are ignored at runtime.
 - `SIGHUP` re-reads the checkout and the key (Unlock, Pull & restart) without
-  restarting the container. Restarting the container forgets the key.
+  restarting the container. Restarting the container forgets the key. Pioneer writes
+  a reload id to `/run/agent/reload` first and waits for the status to echo it.
 - OpenHuman keeps tool-server secrets in a store the supervisor places on tmpfs. If
   it can't prove that store is in memory, the agent refuses to start.
-- `/run/agent/status.json` (root-only) reports `state` and `lock`
-  (`locked`, `unlocked`, `key_mismatch`, `nothing_to_decrypt`).
-- `supervisor.py check-key` reads a key on stdin: exit 0 decrypts `.env`, 3 wrong key,
-  4 nothing to decrypt.
+- `/run/agent/status.json` (root-only) reports `state`, `reload_id` and, only while
+  `running`, `lock` (`locked`, `unlocked`, `key_mismatch`, `nothing_to_decrypt`).
+- `supervisor.py check-key` reads a key on stdin: exit 0 decrypts every encrypted value,
+  3 wrong key, 4 no encrypted assignment to decrypt.
 
 | Where | Holds | Can |
 | --- | --- | --- |

@@ -1,12 +1,13 @@
 """Trusted agent supervisor, baked into the runtime image at /opt/agent-runtime.
 
 It runs as root inside the container and is never read from the user's checkout.
-Only it can read the unlock key (/run/agent is a root-only tmpfs). It decrypts .env
-with dotenvx running as `nobody`, then starts OpenHuman as the unprivileged `agent`
-user with the decrypted values but never the key. Status for Pioneer goes to
-/run/agent/status.json, which agent code can't write. Nothing here prints a secret.
+Only it can read the unlock key (/run/agent is a root-only tmpfs). It decrypts each
+encrypted .env value itself (envfile.py: no expansion, no command substitution, no
+dotenvx), then starts OpenHuman as the unprivileged `agent` user with those values but
+never the key. Status for Pioneer goes to /run/agent/status.json, which agent code
+can't write. Nothing here prints a secret.
 
-  supervisor.py            supervise; SIGHUP re-reads the checkout and key, SIGTERM stops
+  supervisor.py            supervise; SIGHUP re-reads the checkout, key and reload id; SIGTERM stops
   supervisor.py check-key  key on stdin; exit 0 decrypts .env, 3 wrong key, 4 nothing to decrypt
   supervisor.py core       internal: prepare the workspace as `agent`, then exec openhuman-core
 """
@@ -21,6 +22,8 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+
+import envfile
 
 AGENT_DIR = Path(os.environ.get("AGENT_DIR", "/agent"))  # the user's checkout: data, never code we run as root
 RUN = Path(os.environ.get("AGENT_RUN_DIR", "/run/agent"))  # root-only tmpfs: unlock key and status
@@ -74,30 +77,29 @@ class NothingToDecrypt(Exception):
 
 def as_user(name):
     """Drop to `name` for a child process when running as root; tests run unprivileged."""
-    return {"user": name, "group": name if name != "nobody" else "nogroup", "extra_groups": []} if os.geteuid() == 0 else {}
+    return {"user": name, "group": name, "extra_groups": []} if os.geteuid() == 0 else {}
 
 
 def decrypt_env(key):
-    """The checkout's .env as plain values. Raises unless at least one encrypted value decrypts."""
-    env_file = AGENT_DIR / ".env"
+    """Every encrypted assignment in the checkout's .env, decrypted literally.
+
+    Raises NothingToDecrypt unless the file has at least one encrypted assignment, and
+    ValueError unless the key opens all of them. Plaintext assignments are ignored."""
     try:
-        text = env_file.read_text()
+        pairs = envfile.parse((AGENT_DIR / ".env").read_text())
     except FileNotFoundError:
         raise NothingToDecrypt from None
-    if "encrypted:" not in text:
+    encrypted = {name: value for name, value in pairs if value.startswith("encrypted:")}
+    if not encrypted:
         raise NothingToDecrypt
     if not re.fullmatch(r"[0-9a-f]{64}", key):
         raise ValueError("not an unlock key")
-    # dotenvx parses user-supplied content, so it runs as `nobody`. An explicit empty keys
-    # file means the key can only come from here, never a stray .env.keys in the checkout.
-    result = subprocess.run(["dotenvx", "get", "-f", str(env_file), "-fk", "/dev/null", "--format", "json"],
-                            env={"PATH": os.environ.get("PATH", ""), "HOME": "/tmp", "DOTENV_PRIVATE_KEY": key},
-                            capture_output=True, text=True, timeout=60, **as_user("nobody"))
-    if result.returncode:
-        raise ValueError("the unlock key does not decrypt .env")
-    values = {k: v for k, v in json.loads(result.stdout).items() if not k.startswith("DOTENV_PUBLIC_KEY")}
-    if any(not usable(v) and v for v in values.values()):
-        raise ValueError("some values did not decrypt")
+    try:
+        values = {name: envfile.decrypt(key, value) for name, value in encrypted.items()}
+    except Exception:
+        raise ValueError("the unlock key does not decrypt .env") from None
+    if any(key in value for value in values.values()):
+        raise ValueError("a value contains the unlock key")
     return values
 
 
@@ -128,11 +130,23 @@ def child_env(values):
     return env
 
 
-def write_status(**fields):
-    """Pioneer reads this as root; agent processes can't write /run/agent."""
+def reload_id():
+    """Pioneer writes an id to /run/agent/reload before each SIGHUP and waits for status
+    to echo it, so a result is always tied to the request that caused it."""
+    try:
+        value = (RUN / "reload").read_text().strip()
+    except FileNotFoundError:
+        return None
+    return value if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) else None
+
+
+def write_status(state, reload, lock=None):
+    """Pioneer reads this as root; agent processes can't write /run/agent. `lock` is
+    reported only once the agent is running, so it never describes a failed start."""
     try:
         tmp = RUN / ".status.tmp"
-        tmp.write_text(json.dumps({**fields, "at": int(time.time())}))
+        tmp.write_text(json.dumps({"state": state, "reload_id": reload, "lock": lock if state == "running" else None,
+                                   "at": int(time.time())}))
         os.replace(tmp, RUN / "status.json")
     except OSError as error:
         log(f"status unavailable ({error.strerror})")
@@ -241,23 +255,24 @@ def apply(core, env):
 # ── supervision (root) ──────────────────────────────────────────────────────────
 
 def run_once(core):
+    reload = reload_id()
     values, lock = unlock()
     log(f"lock state: {lock}")
-    write_status(state="starting", lock=lock)
+    write_status("starting", reload)
     child = subprocess.Popen([sys.executable, __file__, "core"], env=child_env(values), **as_user("agent"))
     for _ in range(120):
         if core.healthy() or child.poll() is not None:
             break
         time.sleep(0.5)
     if child.poll() is not None:
-        write_status(state="failed", lock=lock)
+        write_status("failed", reload)
         return child
     try:
         apply(core, child_env(values))
-        write_status(state="running", lock=lock)
+        write_status("running", reload, lock)
         log("agent is running")
     except Exception as error:  # keep the core up so the owner can inspect it from Studio
-        write_status(state="configuration_failed", lock=lock)
+        write_status("configuration_failed", reload)
         log(f"configuration failed: {error}")
     return child
 
@@ -298,7 +313,7 @@ def main():
             state["reload"] = False
             log("reloading")
             continue
-        write_status(state="stopped", lock="locked")
+        write_status("stopped", reload_id())
         sys.exit(code)
 
 

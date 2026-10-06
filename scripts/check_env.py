@@ -1,16 +1,16 @@
 """Refuses committed plaintext secrets.
 
 Every value in a tracked env file must be dotenvx ciphertext and private key files
-must never be tracked. Lines are parsed with dotenv's own LINE expression, so
-anything dotenv would load is checked. Reads the git index (what is about to be
+must never be tracked. Lines are parsed with runtime/envfile.py, a port of dotenv's
+parser, so anything dotenv would load is checked. Reads the git index (what is about to be
 committed) and fails closed if any file can't be read.
 """
-import re
 import subprocess
 import sys
+from pathlib import Path
 
-# Port of dotenv's LINE regex (motdotla/dotenv lib/main.js), which dotenvx also uses.
-LINE = re.compile(r"^\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*\"(?:\\\"|[^\"])*\"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?$", re.M)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
+from envfile import parse  # noqa: E402  (the same dotenv parser the runtime uses)
 
 
 def is_env_file(path):
@@ -19,15 +19,8 @@ def is_env_file(path):
 
 
 def plaintext_keys(text):
-    bad = []
-    for key, raw in LINE.findall(text.replace("\r\n", "\n")):
-        value = raw.strip()
-        if len(value) > 1 and value[0] in "'\"`" and value[-1] == value[0]:
-            value = value[1:-1]
-        if key.startswith("DOTENV_PUBLIC_KEY") or value == "" or value.startswith("encrypted:"):
-            continue
-        bad.append(key)
-    return bad
+    return [name for name, value in parse(text)
+            if not (name.startswith("DOTENV_PUBLIC_KEY") or value == "" or value.startswith("encrypted:"))]
 
 
 def problems(paths, read):

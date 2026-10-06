@@ -1,0 +1,10 @@
+"""Disposable test fixture made with dotenvx 2.33.0. This key protects nothing else."""
+KEY = "ff08a6d7502cc64bd85f5bce6d97a78bfcd2c513e9ee158111fee9946147ec9c"
+ENV = """\
+DOTENV_PUBLIC_KEY="03281d32a9bb78dd7123f5fe44f446a0c4812b5ab15e47fb2c9b98392a34cc4923"
+LEAK="encrypted:BJCNw7r1ITYebgZA5ba2EU81Qf7uuqv07LH3pFpBFNgqtuF9KUAmrRoooXhW5cKEvXrUtUgUbhKnV7jdbdw5rpR6DcSI9xLplYBH/xZXJim+liZf9C1njn6hga7GJ4l9fcvd/XRV5etkeEYIH/dqfRpIymvdDQ=="
+SUB="encrypted:BI64BEs3wcbsO7pVtmqThoLJ5Yps2wBEgXKV9Xn1kd1f07/lmWutePn/ZoKrO4kFSI2sRKDa607eM8O2cpAfLN+y3Yk8Sod8EFK/ombGhOQEsk3koz3J9mWSmkwCg7T2N972BBeqbQLQyEILqxGNO7/TlPk="
+PLAIN="encrypted:BGD1+BOtVvUfAXgkwni8UmCj1pXOuKZFjM3JLCMy0I6yzB3CC3MjNoVM8OomBlg1jiDG+J7L6RA84gtisrhr4dppgqMrcuus8SwSkDyPsmwoSDpzGnTQRMUcY2jbfbDsS3lD9MjxQWJiDDR7"
+MULTI="encrypted:BMy9E6JerNSVbs0ezHLxP8iLvGEkCkT8m4d/MAsjtT/yl0RrtRra7N6Usike2XNtishRaPdJ97PRl3yTi6CHwBfV2Te/DkOD3l3+oBLwdPCs+zm7jB7hAPtlEttP+6lF71mlZWXvNOzRS4RP"
+QUOTES="encrypted:BMBK1qqntpLdB3gkqDcJ+AP9KYowF2uRemegJwXbRLxQjm9FUsnTtrqI8kRw/JpkRBKfD5fb7i7oJLKt5Pwxy8xsBge7ekNzcWevRF+OyjfrnTHCdhHXpaEzumlnDb+rUCZuJ0i5MHY/dgOVQ13KFjKh2AduNNgEFAil"
+"""

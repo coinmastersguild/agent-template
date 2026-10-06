@@ -1,11 +1,14 @@
 import io
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import envfile
 import supervisor
+from fixture import ENV, KEY
 from supervisor import cron_plan, expand_servers, keep_tool_secrets_in_memory, on_tmpfs
 
 
@@ -88,6 +91,7 @@ class SecretStore(unittest.TestCase):
 class Unlocking(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
+        self.env = Path(self.dir.name, ".env")
         self.patches = [mock.patch.object(supervisor, "AGENT_DIR", Path(self.dir.name)),
                         mock.patch.object(supervisor, "RUN", Path(self.dir.name, "run"))]
         for p in self.patches:
@@ -102,31 +106,52 @@ class Unlocking(unittest.TestCase):
         with mock.patch("sys.stdin", io.StringIO(key)):
             return supervisor.check_key()
 
-    def test_check_key_without_an_encrypted_file_is_not_success(self):
-        self.assertEqual(self.check("a" * 64), supervisor.NOTHING_TO_DECRYPT)
-        Path(self.dir.name, ".env").write_text("PLAIN=\n")
+    def test_check_key_needs_a_real_encrypted_assignment(self):
+        self.assertEqual(self.check(KEY), supervisor.NOTHING_TO_DECRYPT)  # no .env
+        self.env.write_text("PLAIN=\n")
+        self.assertEqual(self.check(KEY), supervisor.NOTHING_TO_DECRYPT)
+        self.env.write_text('# "encrypted:abc" in a comment\nTOKEN=plaintext\n')  # review repro
         self.assertEqual(self.check("a" * 64), supervisor.NOTHING_TO_DECRYPT)
 
-    def test_malformed_and_wrong_keys_are_wrong(self):
-        Path(self.dir.name, ".env").write_text('X="encrypted:abc"\n')
+    def test_malformed_wrong_and_partial_keys_are_wrong(self):
+        self.env.write_text(ENV)
         self.assertEqual(self.check("not-a-key"), supervisor.WRONG_KEY)
-        failed = mock.Mock(returncode=1, stdout="")
-        with mock.patch("subprocess.run", return_value=failed):
-            self.assertEqual(self.check("a" * 64), supervisor.WRONG_KEY)
+        self.assertEqual(self.check("c" * 64), supervisor.WRONG_KEY)
+        other = dict(envfile.parse(ENV))["PLAIN"]
+        self.env.write_text(ENV + 'FOREIGN="encrypted:' + "B" * 140 + '"\n')  # one value the key can't open
+        self.assertEqual(self.check(KEY), supervisor.WRONG_KEY)
+        self.assertTrue(other)
 
-    def test_only_successful_decryption_unlocks_and_the_key_never_reaches_the_agent(self):
-        Path(self.dir.name, ".env").write_text('X_API_KEY="encrypted:abc"\nMODEL="encrypted:def"\n')
-        ok = mock.Mock(returncode=0, stdout='{"DOTENV_PUBLIC_KEY":"03","X_API_KEY":"x","MODEL":"mine"}')
-        with mock.patch.dict(os.environ, {"DOTENV_PRIVATE_KEY": "a" * 64, "MODEL": "pioneer"}), \
-             mock.patch("subprocess.run", return_value=ok):
+    def test_expansion_payloads_stay_literal_and_the_key_never_reaches_the_agent(self):
+        self.env.write_text(ENV + "PLAINTEXT_SETTING=ignored\n")
+        self.assertEqual(self.check(KEY), 0)
+        with mock.patch.dict(os.environ, {"DOTENV_PRIVATE_KEY": KEY, "PLAIN": "runtime wins"}):
             values, lock = supervisor.unlock()
             env = supervisor.child_env(values)
         self.assertEqual(lock, "unlocked")
-        self.assertEqual((env["MODEL"], env["X_API_KEY"]), ("pioneer", "x"))
+        self.assertEqual((env["LEAK"], env["SUB"], env["PLAIN"]), ("${DOTENV_PRIVATE_KEY}", "$(echo substituted)", "runtime wins"))
+        self.assertNotIn("PLAINTEXT_SETTING", values)
         self.assertNotIn("DOTENV_PRIVATE_KEY", env)
-        half = mock.Mock(returncode=0, stdout='{"X_API_KEY":"x","MODEL":"encrypted:def"}')
-        with mock.patch.dict(os.environ, {"DOTENV_PRIVATE_KEY": "a" * 64}), mock.patch("subprocess.run", return_value=half):
-            self.assertEqual(supervisor.unlock(), ({}, "key_mismatch"))
+        self.assertFalse(any(KEY in v for v in env.values()))
+
+    def test_a_value_containing_the_key_is_refused(self):
+        with mock.patch.object(supervisor.envfile, "decrypt", return_value="prefix-" + KEY):
+            self.env.write_text('A="encrypted:x"\n')
+            self.assertEqual(self.check(KEY), supervisor.WRONG_KEY)
+
+
+class Status(unittest.TestCase):
+    def test_lock_is_reported_only_while_running_and_tied_to_the_reload(self):
+        with tempfile.TemporaryDirectory() as run, mock.patch.object(supervisor, "RUN", Path(run)):
+            Path(run, "reload").write_text("req-42\n")
+            for state in ("starting", "configuration_failed", "failed"):
+                supervisor.write_status(state, supervisor.reload_id(), "unlocked")
+                status = json.loads(Path(run, "status.json").read_text())
+                self.assertEqual((status["lock"], status["reload_id"]), (None, "req-42"))
+            supervisor.write_status("running", supervisor.reload_id(), "unlocked")
+            self.assertEqual(json.loads(Path(run, "status.json").read_text())["lock"], "unlocked")
+            Path(run, "reload").write_text("bad id with spaces")
+            self.assertIsNone(supervisor.reload_id())
 
 
 if __name__ == "__main__":
