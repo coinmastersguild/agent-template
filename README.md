@@ -41,22 +41,27 @@ values apply only if you set them.
 
 ## How it runs
 
-`start.py` is the whole runtime contract. It decrypts `.env` with the unlock key,
-copies `agent/*.md` into OpenHuman's workspace (your files win; notes the agent wrote
-itself are kept), starts `openhuman-core`, signs in with OpenHuman's offline local
-session (no TinyHumans account), turns analytics off, points inference at
-`MODEL_BASE_URL`, installs `mcp.json` and replaces the schedules it owns with
+The runtime is a supervisor baked into the image (`runtime/supervisor.py`, copied to
+`/opt/agent-runtime`). Pioneer builds it from this upstream template at a pinned
+version and never runs code from your checkout as root. It decrypts `.env` with the
+unlock key, copies `agent/*.md` into OpenHuman's workspace (your files win; notes the
+agent wrote itself are kept), starts `openhuman-core`, signs in with OpenHuman's
+offline local session (no TinyHumans account), turns analytics off, points inference
+at `MODEL_BASE_URL`, installs `mcp.json` and replaces the schedules it owns with
 `cron.json`. A tool server whose secret is missing is disabled rather than crashing
 the agent, so a locked agent still boots.
 
-- The unlock key comes from `/run/agent/unlock` (an in-memory file Pioneer writes) or,
-  locally, `DOTENV_PRIVATE_KEY`. It is never passed to OpenHuman or your tools; they
-  only see the decrypted values.
+- The supervisor runs as root; OpenHuman and every tool run as `agent` (uid 1000).
+  Only the supervisor can read the unlock key in `/run/agent/unlock`, a root-only
+  tmpfs, and it never passes the key on. dotenvx parses your `.env` as `nobody`.
 - `SIGHUP` re-reads the checkout and the key (Unlock, Pull & restart) without
   restarting the container. Restarting the container forgets the key.
-- OpenHuman keeps tool-server secrets in a store that `start.py` places in
-  `/dev/shm`, so decrypted secrets never land on disk.
-- `python3 start.py check-key` verifies a key given on stdin (exit 0 or 3).
+- OpenHuman keeps tool-server secrets in a store the supervisor places on tmpfs. If
+  it can't prove that store is in memory, the agent refuses to start.
+- `/run/agent/status.json` (root-only) reports `state` and `lock`
+  (`locked`, `unlocked`, `key_mismatch`, `nothing_to_decrypt`).
+- `supervisor.py check-key` reads a key on stdin: exit 0 decrypts `.env`, 3 wrong key,
+  4 nothing to decrypt.
 
 | Where | Holds | Can |
 | --- | --- | --- |
@@ -65,8 +70,7 @@ the agent, so a locked agent still boots.
 | Pioneer runtime | A read-only GitHub grant for this one repository; your unlock key **in memory only** | Pull and run. It can't push, and it forgets the key on restart, so you unlock again |
 
 Pioneer operates the host: the runtime is isolated from other users, not hidden from
-the operator. Pioneer runs this image built from the upstream template at a pinned
-version; your copy of `Dockerfile` is used only locally.
+the operator. Your copies of `Dockerfile` and `runtime/` are used only locally.
 
 ## Commands
 

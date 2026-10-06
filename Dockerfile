@@ -15,9 +15,12 @@ RUN set -eu; case "$TARGETARCH" in \
   curl -fsSL -o /tmp/dx.tgz "https://github.com/dotenvx/dotenvx/releases/download/v${DOTENVX_VERSION}/dotenvx-${DOTENVX_VERSION}-linux-${TARGETARCH}.tar.gz"; \
   echo "$dx_sum  /tmp/dx.tgz" | sha256sum -c -; tar -xzf /tmp/dx.tgz -C /usr/local/bin; rm /tmp/*.tgz
 RUN userdel --remove ubuntu && useradd --uid 1000 --create-home agent
-USER agent
+# The trusted supervisor lives in the image, never in the user's checkout. It runs as
+# root to hold the unlock key; OpenHuman and every tool run as `agent` (uid 1000).
+COPY runtime/supervisor.py /opt/agent-runtime/supervisor.py
+RUN chmod 0755 /opt/agent-runtime && chmod 0644 /opt/agent-runtime/supervisor.py
 WORKDIR /agent
 ENV OPENHUMAN_WORKSPACE=/data OPENHUMAN_CORE_HOST=0.0.0.0
 EXPOSE 7788
-# start.py supervises openhuman-core: SIGHUP reloads the checkout and unlock key. Run with --init.
-CMD ["python3", "start.py"]
+# Run with --init and a root-only tmpfs at /run/agent (see README).
+CMD ["python3", "/opt/agent-runtime/supervisor.py"]

@@ -1,6 +1,6 @@
 # Everything runs inside the same image Pioneer runs, so you only need Docker, git and make.
 IMAGE := agent-runtime:local
-DOCKER := docker run --rm -v "$(CURDIR)":/agent
+DOCKER := docker run --rm -u "$$(id -u):$$(id -g)" -e HOME=/tmp -v "$(CURDIR)":/agent
 PORT ?= 7788
 
 .PHONY: help setup image secret key check run
@@ -28,7 +28,7 @@ key: ## Copy the unlock key for Pioneer Studio to the clipboard
 
 check: ## Verify no plaintext secret is committed (also runs in CI)
 	cd scripts && python3 -m unittest -q test_check_env
-	python3 -m unittest -q test_start
+	cd runtime && python3 -m unittest -q test_supervisor
 	python3 scripts/check_env.py
 
 run: image ## Run the agent locally, exactly as Pioneer runs it
@@ -36,5 +36,6 @@ run: image ## Run the agent locally, exactly as Pioneer runs it
 	@echo "Core: http://127.0.0.1:$(PORT)/rpc  token: .data/core.token  (OpenHuman app → remote core)"
 	@DOTENV_PRIVATE_KEY=$$(sed -n 's/^DOTENV_PRIVATE_KEY="\{0,1\}\([0-9a-f]\{64\}\)"\{0,1\}$$/\1/p' .env.keys 2>/dev/null) \
 	  OPENHUMAN_CORE_TOKEN=$$(cat .data/core.token) \
-	  docker run --rm --init $$([ -t 0 ] && echo -it) -p 127.0.0.1:$(PORT):7788 -v "$(CURDIR)":/agent:ro -v "$(CURDIR)/.data":/data \
+	  docker run --rm --init $$([ -t 0 ] && echo -it) -p 127.0.0.1:$(PORT):7788 --tmpfs /run/agent:mode=0700 \
+	  -v "$(CURDIR)":/agent:ro -v "$(CURDIR)/.data":/data \
 	  -e DOTENV_PRIVATE_KEY -e OPENHUMAN_CORE_TOKEN $(IMAGE)

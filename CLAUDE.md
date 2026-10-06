@@ -1,7 +1,8 @@
 # Editing this agent
 
 This repository is an OpenHuman agent. `agent/` is what the agent is; everything
-else is tooling. `start.py` applies `agent/` to OpenHuman at boot.
+else is tooling. `runtime/supervisor.py` (baked into the image) applies `agent/` to
+OpenHuman at boot; editing it changes only local runs.
 
 - Behavior: `agent/SOUL.md`, `agent/IDENTITY.md`. Tools: `agent/mcp.json` (+ code in
   `agent/tools/`). Schedules: `agent/cron.json`.
