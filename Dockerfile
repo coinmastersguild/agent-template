@@ -14,10 +14,10 @@ RUN set -eu; case "$TARGETARCH" in \
   echo "$oh_sum  /tmp/oh.tgz" | sha256sum -c -; tar -xzf /tmp/oh.tgz -C /usr/local/bin; rm -f /usr/local/bin/openhuman-tui; \
   curl -fsSL -o /tmp/dx.tgz "https://github.com/dotenvx/dotenvx/releases/download/v${DOTENVX_VERSION}/dotenvx-${DOTENVX_VERSION}-linux-${TARGETARCH}.tar.gz"; \
   echo "$dx_sum  /tmp/dx.tgz" | sha256sum -c -; tar -xzf /tmp/dx.tgz -C /usr/local/bin; rm /tmp/*.tgz
-RUN useradd --create-home agent
+RUN userdel --remove ubuntu && useradd --uid 1000 --create-home agent
 USER agent
 WORKDIR /agent
 ENV OPENHUMAN_WORKSPACE=/data OPENHUMAN_CORE_HOST=0.0.0.0
 EXPOSE 7788
-# Decrypt .env only when an unlock key is present; a locked agent still boots.
-CMD ["sh", "-c", "if [ -n \"$DOTENV_PRIVATE_KEY\" ]; then exec dotenvx run -q -- python3 start.py; else exec python3 start.py; fi"]
+# start.py supervises openhuman-core: SIGHUP reloads the checkout and unlock key. Run with --init.
+CMD ["python3", "start.py"]

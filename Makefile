@@ -36,5 +36,5 @@ run: image ## Run the agent locally, exactly as Pioneer runs it
 	@echo "Core: http://127.0.0.1:$(PORT)/rpc  token: .data/core.token  (OpenHuman app → remote core)"
 	@DOTENV_PRIVATE_KEY=$$(sed -n 's/^DOTENV_PRIVATE_KEY="\{0,1\}\([0-9a-f]\{64\}\)"\{0,1\}$$/\1/p' .env.keys 2>/dev/null) \
 	  OPENHUMAN_CORE_TOKEN=$$(cat .data/core.token) \
-	  docker run --rm $$([ -t 0 ] && echo -it) -p 127.0.0.1:$(PORT):7788 -v "$(CURDIR)":/agent:ro -v "$(CURDIR)/.data":/data \
+	  docker run --rm --init $$([ -t 0 ] && echo -it) -p 127.0.0.1:$(PORT):7788 -v "$(CURDIR)":/agent:ro -v "$(CURDIR)/.data":/data \
 	  -e DOTENV_PRIVATE_KEY -e OPENHUMAN_CORE_TOKEN $(IMAGE)

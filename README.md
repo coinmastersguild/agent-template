@@ -41,13 +41,22 @@ values apply only if you set them.
 
 ## How it runs
 
-`start.py` is the whole runtime contract. It copies `agent/*.md` into OpenHuman's
-workspace (your files win; notes the agent wrote itself are kept), starts
-`openhuman-core`, signs in with OpenHuman's offline local session (no TinyHumans
-account), turns analytics off, points inference at `MODEL_BASE_URL`, installs
-`mcp.json` and replaces the schedules it owns with `cron.json`. A tool server whose
-secret is missing is disabled rather than crashing the agent, so a locked agent
-still boots.
+`start.py` is the whole runtime contract. It decrypts `.env` with the unlock key,
+copies `agent/*.md` into OpenHuman's workspace (your files win; notes the agent wrote
+itself are kept), starts `openhuman-core`, signs in with OpenHuman's offline local
+session (no TinyHumans account), turns analytics off, points inference at
+`MODEL_BASE_URL`, installs `mcp.json` and replaces the schedules it owns with
+`cron.json`. A tool server whose secret is missing is disabled rather than crashing
+the agent, so a locked agent still boots.
+
+- The unlock key comes from `/run/agent/unlock` (an in-memory file Pioneer writes) or,
+  locally, `DOTENV_PRIVATE_KEY`. It is never passed to OpenHuman or your tools; they
+  only see the decrypted values.
+- `SIGHUP` re-reads the checkout and the key (Unlock, Pull & restart) without
+  restarting the container. Restarting the container forgets the key.
+- OpenHuman keeps tool-server secrets in a store that `start.py` places in
+  `/dev/shm`, so decrypted secrets never land on disk.
+- `python3 start.py check-key` verifies a key given on stdin (exit 0 or 3).
 
 | Where | Holds | Can |
 | --- | --- | --- |

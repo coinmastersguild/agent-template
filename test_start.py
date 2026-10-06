@@ -1,6 +1,9 @@
 import unittest
 import tempfile
 from pathlib import Path
+import os
+from unittest import mock
+import start
 from start import cron_plan, expand_servers, keep_tool_secrets_in_memory
 
 
@@ -35,8 +38,22 @@ class StartTest(unittest.TestCase):
             keep_tool_secrets_in_memory(Path(disk), Path(memory))
             self.assertTrue(old.is_symlink())
             self.assertEqual(list(Path(memory, "openhuman-mcp-clients").iterdir()), [])
-            keep_tool_secrets_in_memory(Path(disk), Path(memory))  # idempotent
-            self.assertTrue(old.is_symlink())
+            Path(memory, "openhuman-mcp-clients").rmdir()  # a container restart empties tmpfs
+            keep_tool_secrets_in_memory(Path(disk), Path(memory))
+            self.assertTrue(old.is_symlink() and old.resolve().is_dir())
+
+
+    def test_runtime_values_win_and_the_key_never_reaches_openhuman(self):
+        with mock.patch.dict(os.environ, {"DOTENV_PRIVATE_KEY": "k" * 64, "MODEL": "pioneer", "UNLOCK_KEY_FILE": "/nonexistent"}), \
+             mock.patch.object(start, "decrypt_env", return_value={"MODEL": "mine", "X_API_KEY": "x"}):
+            env, unlocked = start.runtime_env()
+        self.assertTrue(unlocked)
+        self.assertEqual((env["MODEL"], env["X_API_KEY"]), ("pioneer", "x"))
+        self.assertNotIn("DOTENV_PRIVATE_KEY", env)
+
+    def test_wrong_key_stays_locked(self):
+        with mock.patch.object(start, "decrypt_env", side_effect=ValueError("bad")):
+            self.assertEqual(start.runtime_env()[1], False)
 
 
 if __name__ == "__main__":
