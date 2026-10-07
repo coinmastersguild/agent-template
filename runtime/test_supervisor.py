@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tempfile
 import unittest
 from pathlib import Path
@@ -266,6 +267,50 @@ class Lifecycle(unittest.TestCase):
         supervisor.wait_child(self.state)
         self.assertLess(time.monotonic() - started, 5)
         self.assertIsNotNone(self.children[0].poll())
+
+    def test_stalled_configuration_rpc_does_not_delay_termination(self):
+        # Review repro: a core that ignores SIGTERM and an RPC that never answers.
+        self.ignore_term = True
+        release = threading.Event()
+
+        class Stalled(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_POST(self):
+                release.wait(10)
+                self.send_response(500)
+                self.end_headers()
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Stalled)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        core = supervisor.Core(server.server_address[1], "token")
+        signalled = {}
+
+        def send():
+            signalled["at"] = time.monotonic()
+            self.on_signal(signal.SIGTERM, None)
+
+        try:
+            with mock.patch.object(supervisor, "STOP_GRACE", 0.3):
+                threading.Timer(0.6, send).start()  # lands while auth_set_credential is stalled
+                supervisor.run_once(core, self.state)
+                supervisor.wait_child(self.state)
+            child = self.children[0]
+            self.assertEqual(child.returncode, -signal.SIGKILL)
+            self.assertLess(time.monotonic() - signalled["at"], 0.3 + 0.6)  # grace counted from the signal
+            self.assertTrue(core.cancelled)
+            with self.assertRaises(RuntimeError):
+                core.call("cron_list")  # a leftover worker can never configure the next attempt
+            self.assertEqual(self.status(), "starting")
+        finally:
+            release.set()
+            server.shutdown()
 
 
 if __name__ == "__main__":

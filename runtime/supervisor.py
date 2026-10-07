@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -199,8 +200,14 @@ def core_mode():
 # ── configuration over RPC (root) ───────────────────────────────────────────────
 
 class Core:
+    """One RPC client per start attempt. Cancelling it stops a configuration worker that
+    outlived its attempt from ever reaching the next attempt's core on the same port."""
+
     def __init__(self, port, token):
-        self.url, self.token, self.next_id = f"http://127.0.0.1:{port}", token, 0
+        self.url, self.token, self.next_id, self.cancelled = f"http://127.0.0.1:{port}", token, 0, False
+
+    def cancel(self):
+        self.cancelled = True
 
     def healthy(self):
         try:
@@ -209,6 +216,8 @@ class Core:
             return False
 
     def call(self, method, params=None):
+        if self.cancelled:
+            raise RuntimeError("start attempt cancelled")
         self.next_id += 1
         body = json.dumps({"jsonrpc": "2.0", "id": self.next_id, "method": "openhuman." + method, "params": params or {}})
         request = urllib.request.Request(self.url + "/rpc", body.encode(), {
@@ -258,16 +267,23 @@ STOP_GRACE = float(os.environ.get("AGENT_STOP_GRACE_SECONDS", "20"))
 
 
 def new_state():
-    return {"child": None, "reload": False, "stop": False}
+    return {"child": None, "reload": False, "stop": False, "deadline": None}
 
 
 def handler(state):
-    """SIGHUP = reload, SIGTERM = stop. Only flags and a non-blocking terminate here; the
-    main flow notices the flag at its next checkpoint and does the bounded wait."""
+    """SIGHUP = reload, SIGTERM = stop. The shutdown deadline starts now, and a watchdog
+    kills the core at that deadline no matter what the main thread is doing."""
     def on_signal(signum, _frame):
         state["reload" if signum == signal.SIGHUP else "stop"] = True
-        if state["child"] and state["child"].poll() is None:
-            state["child"].terminate()
+        if state["deadline"] is None:
+            state["deadline"] = time.monotonic() + STOP_GRACE
+        child = state["child"]
+        if child and child.poll() is None:
+            child.terminate()
+            watchdog = threading.Timer(max(0.0, state["deadline"] - time.monotonic()),
+                                       lambda: child.poll() is None and child.kill())
+            watchdog.daemon = True
+            watchdog.start()
     return on_signal
 
 
@@ -276,21 +292,22 @@ def interrupted(state):
 
 
 def stop_child(state):
-    """Terminate the core, then kill it if it hasn't exited within STOP_GRACE seconds."""
+    """Terminate the core and kill it if it is still alive at the deadline, which started
+    when the signal arrived (or now, if the stop comes from elsewhere)."""
     child = state["child"]
     if child is None or child.poll() is not None:
         return
     child.terminate()
-    deadline = time.monotonic() + STOP_GRACE
+    deadline = state["deadline"] or time.monotonic() + STOP_GRACE
     while child.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.1)
+        time.sleep(0.05)
     if child.poll() is None:
         child.kill()
         child.wait()
 
 
 def wait_child(state):
-    """Wait for the core to exit; once a signal is pending, wait at most STOP_GRACE."""
+    """Wait for the core to exit; once a signal is pending, no longer than its deadline."""
     child = state["child"]
     while child.poll() is None:
         if interrupted(state):
@@ -300,8 +317,9 @@ def wait_child(state):
 
 
 def run_once(core, state):
-    """Start the core and configure it. Every checkpoint honours a pending signal, so a
-    reload or stop during startup never leaves an unsignalled child running."""
+    """Start the core and configure it. Configuration runs in a worker thread so a signal
+    is noticed within 0.2 s even while an RPC is stalled; an interrupted attempt never
+    reports running or configuration_failed."""
     reload = reload_id()
     values, lock = unlock()
     log(f"lock state: {lock}")
@@ -312,18 +330,31 @@ def run_once(core, state):
             break
         time.sleep(0.5)
     if interrupted(state):
+        core.cancel()
         return stop_child(state)
     if child.poll() is not None:
         return write_status("failed", reload)
-    try:
-        apply(core, child_env(values))
-    except Exception as error:  # keep the core up so the owner can inspect it from Studio
+    outcome = {}
+    done = threading.Event()
+
+    def configure():
+        try:
+            apply(core, child_env(values))
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            done.set()
+
+    threading.Thread(target=configure, daemon=True).start()
+    while not done.wait(0.2):
         if interrupted(state):
-            return stop_child(state)
-        log(f"configuration failed: {error}")
-        return write_status("configuration_failed", reload)
+            break
     if interrupted(state):
+        core.cancel()
         return stop_child(state)
+    if "error" in outcome:  # keep the core up so the owner can inspect it from Studio
+        log(f"configuration failed: {outcome['error']}")
+        return write_status("configuration_failed", reload)
     write_status("running", reload, lock)
     log("agent is running")
 
@@ -347,16 +378,15 @@ def main():
     os.environ.setdefault("OPENHUMAN_CORE_HOST", "127.0.0.1")
     os.environ.setdefault("OPENHUMAN_CORE_PORT", "7788")
     token = os.environ.setdefault("OPENHUMAN_CORE_TOKEN", secrets.token_hex(32))
-    core = Core(int(os.environ["OPENHUMAN_CORE_PORT"]), token)
     state = new_state()
     signal.signal(signal.SIGHUP, handler(state))
     signal.signal(signal.SIGTERM, handler(state))
     while True:
-        run_once(core, state)
+        run_once(Core(int(os.environ["OPENHUMAN_CORE_PORT"]), token), state)
         code = wait_child(state)
         state["child"] = None
         if state["reload"] and not state["stop"]:
-            state["reload"] = False
+            state["reload"], state["deadline"] = False, None
             log("reloading")
             continue
         write_status("stopped", reload_id())
