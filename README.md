@@ -1,8 +1,8 @@
 # Agent template
 
-Your [OpenHuman](https://github.com/tinyhumansai/openhuman) agent in your own GitHub
+Your [OpenHuman](https://github.com/coinmastersguild/openhuman) agent in your own GitHub
 repository. Describe it in plain files, keep its secrets encrypted in git, run it on
-your machine, then run the identical container on Pioneer from
+your machine, then connect that project to a hosted Pioneer runtime from
 [Pioneer Studio](https://studio.pioneers.dev).
 
 ## Start
@@ -24,7 +24,7 @@ your machine, then run the identical container on Pioneer from
    ```
    Commit `.env`. **Never commit `.env.keys`**: it holds your private key and is
    git-ignored. Back it up in your password manager.
-5. Give it a model and run it locally, exactly as Pioneer will:
+5. Give the local core a model and run it:
    ```sh
    make secret NAME=MODEL_BASE_URL   # any OpenAI-compatible endpoint
    make secret NAME=MODEL_API_KEY
@@ -36,13 +36,14 @@ your machine, then run the identical container on Pioneer from
 6. Push. In Studio: **GitHub → connect this repository**, **Unlock** with the key
    from `make key`, then **Pull & restart** whenever you push.
 
-On Pioneer the runtime supplies `MODEL_*` from your agent's prepaid budget; your own
-values apply only if you set them.
+On Pioneer, the trusted hosted runtime uses local GLM and Pioneer Analytics through
+your agent's metered gateway. Your local `MODEL_*` values configure local runs; they
+do not change the hosted inference routes.
 
 ## How it runs
 
 The runtime is a supervisor baked into the image (`runtime/supervisor.py`, copied to
-`/opt/agent-runtime`). Pioneer builds it from this upstream template at a pinned
+`/opt/agent-runtime`). Pioneer builds its trusted hosted supervisor from the published template at a pinned
 version and never runs code from your checkout as root. It decrypts `.env` with the
 unlock key, copies `agent/*.md` into OpenHuman's workspace (your files win; notes the
 agent wrote itself are kept), starts `openhuman-core`, signs in with OpenHuman's
@@ -87,9 +88,26 @@ the operator. Your copies of `Dockerfile` and `runtime/` are used only locally.
 | `make secret NAME=X` | Prompt for a value and encrypt it into `.env` |
 | `make key` | Copy your unlock key to the clipboard for Studio |
 | `make check` | Fail if any committed `.env` value is plaintext (also runs in CI) |
-| `make run` | Run the agent locally in the Pioneer runtime image |
+| `make run` | Run the fork's local core with your MODEL_* settings |
 
 Requires Docker, git and make (and Python 3 for `make check`).
+
+The local image pins a reviewed release of **coinmastersguild/openhuman** and
+verifies the downloaded archive with SHA256. Initial packages are Linux amd64;
+`make` selects `linux/amd64` for every Docker build and run. Apple Silicon uses
+Docker emulation. Native arm64 packages are not yet released.
+
+The local package provides offline chat, MCP tools and scheduled jobs, using
+OpenAI-compatible native tool calling by default. It does
+not include the hosted runtime's native desktop module or its Beast-only gateway
+configuration. Hosted browser, desktop streaming and Blender use the separate
+trusted Pioneer runtime.
+
+Runtime improvements and pull requests target only the public
+[coinmastersguild/openhuman fork](https://github.com/coinmastersguild/openhuman),
+never upstream. Agent-authored PR submission through Alpha is planned and not
+implemented; it will require owner approval. Connecting your project grants only
+read access to that one personal repository, with no organization-wide access.
 
 ## Rotating the key
 
