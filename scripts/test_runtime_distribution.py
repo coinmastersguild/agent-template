@@ -19,6 +19,13 @@ class RuntimeDistribution(unittest.TestCase):
         self.assertRegex(dockerfile, r'ARG OPENHUMAN_SHA256=[0-9a-f]{64}(?:\n|$)')
         self.assertIn('sha256sum -c -', dockerfile)
 
+    def test_local_openai_compatible_runtime_admits_native_tools(self):
+        # The generic core deliberately retains its configurable upstream default.
+        # The template must opt into OpenAI native schemas: its old Python default
+        # strips those schemas, leaving a configured agent unable to use tools.
+        dockerfile = (ROOT / 'Dockerfile').read_text()
+        self.assertRegex(dockerfile, r'ENV[^\n]*OPENHUMAN_TOOL_DISPATCHER=native(?: |\n|$)')
+
     def test_every_make_docker_call_selects_the_tested_platform(self):
         with tempfile.TemporaryDirectory(prefix='template-platform-') as directory:
             path = Path(directory)
