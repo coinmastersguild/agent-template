@@ -12,3 +12,8 @@ OpenHuman at boot; editing it changes only local runs.
 - Run `make check` before committing, and `make run` to try changes locally.
 - The deployed agent pulls this repository read-only. Changes take effect after the
   user pushes and presses **Pull & restart** in Pioneer Studio.
+
+- OpenHuman runtime changes target only the public coinmastersguild/openhuman fork.
+  Never open upstream PRs or issues, message upstream maintainers, or push upstream.
+  A hosted agent has a read-only grant for this one project repository. An Alpha
+  owner-approved public-fork PR executor is planned but is not available yet.
