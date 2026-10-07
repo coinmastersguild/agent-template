@@ -254,27 +254,78 @@ def apply(core, env):
 
 # ── supervision (root) ──────────────────────────────────────────────────────────
 
-def run_once(core):
+STOP_GRACE = float(os.environ.get("AGENT_STOP_GRACE_SECONDS", "20"))
+
+
+def new_state():
+    return {"child": None, "reload": False, "stop": False}
+
+
+def handler(state):
+    """SIGHUP = reload, SIGTERM = stop. Only flags and a non-blocking terminate here; the
+    main flow notices the flag at its next checkpoint and does the bounded wait."""
+    def on_signal(signum, _frame):
+        state["reload" if signum == signal.SIGHUP else "stop"] = True
+        if state["child"] and state["child"].poll() is None:
+            state["child"].terminate()
+    return on_signal
+
+
+def interrupted(state):
+    return state["reload"] or state["stop"]
+
+
+def stop_child(state):
+    """Terminate the core, then kill it if it hasn't exited within STOP_GRACE seconds."""
+    child = state["child"]
+    if child is None or child.poll() is not None:
+        return
+    child.terminate()
+    deadline = time.monotonic() + STOP_GRACE
+    while child.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if child.poll() is None:
+        child.kill()
+        child.wait()
+
+
+def wait_child(state):
+    """Wait for the core to exit; once a signal is pending, wait at most STOP_GRACE."""
+    child = state["child"]
+    while child.poll() is None:
+        if interrupted(state):
+            stop_child(state)
+        time.sleep(0.2)
+    return child.returncode
+
+
+def run_once(core, state):
+    """Start the core and configure it. Every checkpoint honours a pending signal, so a
+    reload or stop during startup never leaves an unsignalled child running."""
     reload = reload_id()
     values, lock = unlock()
     log(f"lock state: {lock}")
     write_status("starting", reload)
-    child = subprocess.Popen([sys.executable, __file__, "core"], env=child_env(values), **as_user("agent"))
+    state["child"] = child = subprocess.Popen([sys.executable, __file__, "core"], env=child_env(values), **as_user("agent"))
     for _ in range(120):
-        if core.healthy() or child.poll() is not None:
+        if interrupted(state) or core.healthy() or child.poll() is not None:
             break
         time.sleep(0.5)
+    if interrupted(state):
+        return stop_child(state)
     if child.poll() is not None:
-        write_status("failed", reload)
-        return child
+        return write_status("failed", reload)
     try:
         apply(core, child_env(values))
-        write_status("running", reload, lock)
-        log("agent is running")
     except Exception as error:  # keep the core up so the owner can inspect it from Studio
-        write_status("configuration_failed", reload)
+        if interrupted(state):
+            return stop_child(state)
         log(f"configuration failed: {error}")
-    return child
+        return write_status("configuration_failed", reload)
+    if interrupted(state):
+        return stop_child(state)
+    write_status("running", reload, lock)
+    log("agent is running")
 
 
 def check_key():
@@ -297,24 +348,19 @@ def main():
     os.environ.setdefault("OPENHUMAN_CORE_PORT", "7788")
     token = os.environ.setdefault("OPENHUMAN_CORE_TOKEN", secrets.token_hex(32))
     core = Core(int(os.environ["OPENHUMAN_CORE_PORT"]), token)
-    state = {"child": None, "reload": False, "stop": False}
-
-    def on_signal(signum, _frame):
-        state["reload" if signum == signal.SIGHUP else "stop"] = True
-        if state["child"]:
-            state["child"].terminate()
-
-    signal.signal(signal.SIGHUP, on_signal)
-    signal.signal(signal.SIGTERM, on_signal)
+    state = new_state()
+    signal.signal(signal.SIGHUP, handler(state))
+    signal.signal(signal.SIGTERM, handler(state))
     while True:
-        state["child"] = run_once(core)
-        code = state["child"].wait()
+        run_once(core, state)
+        code = wait_child(state)
+        state["child"] = None
         if state["reload"] and not state["stop"]:
             state["reload"] = False
             log("reloading")
             continue
         write_status("stopped", reload_id())
-        sys.exit(code)
+        sys.exit(0 if state["stop"] else code)  # a requested stop is clean; otherwise report the core's exit
 
 
 if __name__ == "__main__":

@@ -1,6 +1,11 @@
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
+import threading
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +14,8 @@ from unittest import mock
 import envfile
 import supervisor
 from fixture import ENV, KEY
+
+REAL_POPEN = subprocess.Popen
 from supervisor import cron_plan, expand_servers, keep_tool_secrets_in_memory, on_tmpfs
 
 
@@ -152,6 +159,113 @@ class Status(unittest.TestCase):
             self.assertEqual(json.loads(Path(run, "status.json").read_text())["lock"], "unlocked")
             Path(run, "reload").write_text("bad id with spaces")
             self.assertIsNone(supervisor.reload_id())
+
+
+class Lifecycle(unittest.TestCase):
+    """A reload or stop at any point of startup must end the child, within a bound."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.state = supervisor.new_state()
+        self.on_signal = supervisor.handler(self.state)
+        self.children = []
+        self.patches = [mock.patch.object(supervisor, "RUN", Path(self.dir.name)),
+                        mock.patch.object(supervisor, "AGENT_DIR", Path(self.dir.name)),
+                        mock.patch.object(supervisor, "unlock", side_effect=self.unlock),
+                        mock.patch.object(supervisor.subprocess, "Popen", side_effect=self.spawn),
+                        mock.patch.object(supervisor, "STOP_GRACE", 1.0)]
+        for p in self.patches:
+            p.start()
+        self.ignore_term = False
+        self.before_spawn = None
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        for child in self.children:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+        self.dir.cleanup()
+
+    def unlock(self):
+        if self.before_spawn:
+            self.on_signal(self.before_spawn, None)
+        return {}, "locked"
+
+    def spawn(self, *_args, **_kwargs):
+        code = "import signal, time\n" + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if self.ignore_term else "") + "time.sleep(60)"
+        child = REAL_POPEN([sys.executable, "-c", code])
+        self.children.append(child)
+        time.sleep(0.2)  # let the child install its handlers
+        return child
+
+    def core(self, healthy=True, on_health=None):
+        core = mock.Mock()
+        def check():
+            if on_health:
+                on_health()
+            return healthy
+        core.healthy.side_effect = check
+        return core
+
+    def status(self):
+        path = Path(self.dir.name, "status.json")
+        return json.loads(path.read_text())["state"] if path.exists() else None
+
+    def finish(self, core):
+        started = time.monotonic()
+        supervisor.run_once(core, self.state)
+        supervisor.wait_child(self.state)
+        return time.monotonic() - started
+
+    def test_sighup_during_startup_ends_the_child(self):
+        core = self.core(healthy=False, on_health=lambda: self.on_signal(signal.SIGHUP, None))
+        elapsed = self.finish(core)
+        self.assertIsNotNone(self.children[0].poll())
+        self.assertTrue(self.state["reload"])
+        self.assertEqual(self.status(), "starting")  # never claims running or failed for this attempt
+        self.assertLess(elapsed, 5)
+
+    def test_sigterm_during_configuration_ends_the_child(self):
+        def apply(_core, _env):
+            self.on_signal(signal.SIGTERM, None)
+            raise ConnectionRefusedError("core went away")
+        with mock.patch.object(supervisor, "apply", side_effect=apply):
+            elapsed = self.finish(self.core())
+        self.assertIsNotNone(self.children[0].poll())
+        self.assertTrue(self.state["stop"])
+        self.assertEqual(self.status(), "starting")  # not reported as configuration_failed
+        self.assertLess(elapsed, 5)
+
+    def test_sighup_during_configuration_that_still_succeeds_is_not_reported_running(self):
+        with mock.patch.object(supervisor, "apply", side_effect=lambda *_: self.on_signal(signal.SIGHUP, None)):
+            self.finish(self.core())
+        self.assertIsNotNone(self.children[0].poll())
+        self.assertEqual(self.status(), "starting")
+
+    def test_signal_before_the_child_exists_still_ends_it(self):
+        self.before_spawn = signal.SIGTERM
+        self.finish(self.core())
+        self.assertIsNotNone(self.children[0].poll())
+
+    def test_a_core_ignoring_sigterm_is_killed_after_the_grace_period(self):
+        self.ignore_term = True
+        core = self.core(healthy=False, on_health=lambda: self.on_signal(signal.SIGTERM, None))
+        elapsed = self.finish(core)
+        self.assertEqual(self.children[0].returncode, -signal.SIGKILL)
+        self.assertLess(elapsed, 5)
+
+    def test_signal_while_running_ends_the_child_within_the_bound(self):
+        self.ignore_term = True
+        with mock.patch.object(supervisor, "apply"):
+            supervisor.run_once(self.core(), self.state)
+        self.assertEqual(self.status(), "running")
+        threading.Timer(0.3, self.on_signal, (signal.SIGTERM, None)).start()
+        started = time.monotonic()
+        supervisor.wait_child(self.state)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIsNotNone(self.children[0].poll())
 
 
 if __name__ == "__main__":

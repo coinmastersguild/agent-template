@@ -59,6 +59,9 @@ the agent, so a locked agent still boots.
 - `SIGHUP` re-reads the checkout and the key (Unlock, Pull & restart) without
   restarting the container. Restarting the container forgets the key. Pioneer writes
   a reload id to `/run/agent/reload` first and waits for the status to echo it.
+- A reload or stop that arrives while the agent is still starting or being configured
+  takes effect at once; stopping waits at most `AGENT_STOP_GRACE_SECONDS` (default 20)
+  before killing OpenHuman. A requested stop exits 0.
 - OpenHuman keeps tool-server secrets in a store the supervisor places on tmpfs. If
   it can't prove that store is in memory, the agent refuses to start.
 - `/run/agent/status.json` (root-only) reports `state`, `reload_id` and, only while
